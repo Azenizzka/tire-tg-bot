@@ -1,12 +1,12 @@
 package ru.azenizzka.services;
 
+import jakarta.annotation.PostConstruct;
 import java.io.IOException;
-import java.security.KeyManagementException;
-import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocketFactory;
@@ -17,219 +17,252 @@ import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
-import org.springframework.cache.annotation.Cacheable;
-import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Service;
 import ru.azenizzka.utils.Day;
+import ru.azenizzka.utils.MessagesConfig;
 
-@Component
+@Service
 @Slf4j
 public class LessonScheduleService {
 
-  private static final TrustManager[] TRUST_ALL_CERTS =
-      new TrustManager[] {
-        new X509TrustManager() {
-          public X509Certificate[] getAcceptedIssuers() {
-            return null;
-          }
+  @Value("${schedule.url:https://ntmm.ru/5_screen.files/sheet001.htm}")
+  private String scheduleUrl;
 
-          public void checkClientTrusted(X509Certificate[] certs, String authType) {}
+  private static final SSLSocketFactory SSL_SOCKET_FACTORY = createInsecureSslSocketFactory();
+  private static final Pattern GROUP_PATTERN = Pattern.compile("(?<!\\d)\\d{2,3}(?!\\d)");
 
-          public void checkServerTrusted(X509Certificate[] certs, String authType) {}
-        }
-      };
+  // Отформатированный текст расписания: [Группа -> [День -> Текст]]
+  private final Map<String, Map<Day, String>> scheduleCache = new ConcurrentHashMap<>();
 
-  @Cacheable(value = "schedule", key = "{#groupNum, #day.name()}")
-  public List<List<String>> getLessons(int groupNum, Day day) throws Exception {
-    String url = findGroupUrl(groupNum);
-    Document document = getDocumentByUrl(url);
-    Elements rows = document.select("table").first().select("tr");
+  // Сырой список пар для звонков: [Группа -> [День -> Список пар [номер, предмет, каб]]]
+  private final Map<String, Map<Day, List<List<String>>>> rawLessonsCache = new ConcurrentHashMap<>();
 
-    int neededRow = findNeededRow(rows);
-    int groupColumn = findGroupColumn(rows, neededRow, groupNum);
-    int groupCount = getGroupCount(rows, neededRow);
-
-    List<List<String>> lessonsList = new ArrayList<>();
-
-    int dayNum = calculateDayNum(day);
-
-    if (dayNum == 6) return lessonsList;
-
-    int increment = calculateIncrement(groupNum);
-
-    int startRowIndex = (neededRow + increment) + 6 * dayNum;
-    int endRowIndex = startRowIndex + 6;
-    int need = groupCount * 3;
-
-    for (int rowIndex = startRowIndex; rowIndex < endRowIndex; rowIndex++) {
-      Element row = rows.get(rowIndex);
-      Elements columns = row.select("td");
-
-      int currentIncrement = increment;
-      int currentStartRowIndex;
-      int currentRowIndex;
-
-      int startColumnIndex = findStartColumnIndex(columns);
-      while (startColumnIndex == -1) {
-        currentIncrement++;
-        currentStartRowIndex = (neededRow + currentIncrement) + (6 * dayNum);
-        currentRowIndex = currentStartRowIndex;
-
-        if (currentRowIndex >= rows.size()) {
-          break;
-        }
-
-        row = rows.get(currentRowIndex);
-        columns = row.select("td");
-        startColumnIndex = findStartColumnIndex(columns);
-      }
-
-      if (startColumnIndex == -1) {
-        continue;
-      }
-
-      int index = startColumnIndex;
-
-      int decrement = 0;
-      for (int i = columns.size(); i > (need + index); i--) {
-        if (i - 1 < columns.size() && columns.get(i - 1).text().isEmpty()) {
-          decrement++;
-        } else {
-          break;
-        }
-      }
-
-      if ((columns.size() - decrement - index) % 3 != 0) {
-        throw new Exception("В строке недостаточно столбцов! Может быть вызвано из-за ВПР");
-      }
-
-      int targetIndex = index + 1 + (groupColumn * 3);
-      if (targetIndex >= columns.size()) {
-        continue;
-      }
-
-      String lesson = columns.get(targetIndex).text();
-      String num = columns.get(index + (groupColumn * 3)).text();
-      String cabinet = columns.get(index + 2 + (groupColumn * 3)).text();
-
-      if (!lesson.isEmpty()) {
-        List<String> tempList = new ArrayList<>();
-        tempList.add(num);
-        tempList.add(lesson);
-        tempList.add(cabinet);
-        lessonsList.add(tempList);
-      }
-    }
-    return lessonsList;
+  @PostConstruct
+  public void init() {
+    updateCache();
   }
 
-  public boolean isGroupExists(int groupNum) throws Exception {
+  @Scheduled(fixedRate = 10 * 60 * 1000)
+  public void scheduledCacheUpdate() {
+    updateCache();
+  }
+
+  public synchronized void updateCache() {
+    log.info("Запуск обновления кэша расписания...");
     try {
-      Document mainDocument = getDocumentByUrl("https://www.ntmm.ru/student/raspisanie.php");
-      Elements elements = mainDocument.select("a[href]");
+      Document doc = Jsoup.connect(scheduleUrl)
+          .sslSocketFactory(SSL_SOCKET_FACTORY)
+          .userAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+          .timeout(15_000)
+          .get();
 
-      for (Element hyperLink : elements) {
-        String hyperText = hyperLink.text();
-        if (hyperText.contains(String.valueOf(groupNum))) return true;
-      }
-      return false;
-    } catch (IOException e) {
-      throw new Exception("Сайт недоступен!");
-    }
-  }
-
-  private String findGroupUrl(int groupNum) throws Exception {
-    Document mainDocument = getDocumentByUrl("https://www.ntmm.ru/student/raspisanie.php");
-    Elements elements = mainDocument.select("a[href]");
-    String pattern = ".*-" + groupNum + "(?![0-9]).*$";
-
-    for (Element hyperLink : elements) {
-      String hyperText = hyperLink.text();
-
-      if (hyperText.matches(pattern)) {
-        return "https://www.ntmm.ru"
-            + hyperLink.attr("href").replace(".htm", ".files")
-            + "/sheet001.htm";
-      }
-    }
-    throw new Exception("Такой группы не существует!");
-  }
-
-  private int findNeededRow(Elements rows) {
-    for (int i = 0; i < Math.min(10, rows.size()); i++) {
-      Element row = rows.get(i);
-      AtomicInteger counter = new AtomicInteger();
-
-      for (Element column : row.select("td")) {
-        if (!column.text().isEmpty()) counter.getAndIncrement();
+      Element table = doc.selectFirst("table");
+      if (table == null) {
+        log.warn("Таблица расписания не найдена по адресу {}", scheduleUrl);
+        return;
       }
 
-      if (counter.get() > 3) return i;
-    }
+      String[][] grid = buildMatrix(table);
+      parseMatrix(grid);
 
-    return 0;
+      log.info("Кэш успешно обновлен. Загружено групп: {}", scheduleCache.size());
+    } catch (Exception e) {
+      log.error("Ошибка при обновлении кэша расписания: {}", e.getMessage());
+    }
   }
 
-  private int findGroupColumn(Elements rows, int neededRow, int groupNum) throws Exception {
-    Element row = rows.get(neededRow);
-    Elements columns = row.select("td");
-    int out = -1;
-
-    for (Element column : columns) {
-      String group = column.text();
-      if (!group.isEmpty()) out++;
-
-      if (group.endsWith("-" + groupNum)) return out;
-    }
-
-    throw new Exception("Колонка группы не найдена");
+  public boolean isGroupExists(int group) {
+    return isGroupExists(String.valueOf(group));
   }
 
-  private int getGroupCount(Elements rows, int neededRow) {
-    Element row = rows.get(neededRow);
-    int count = 0;
-    for (Element column : row.select("td")) {
-      if (!column.text().isEmpty()) count++;
-    }
-    return count;
+  public boolean isGroupExists(String group) {
+    if (group == null || group.isBlank()) return false;
+    return scheduleCache.containsKey(group.trim()) || rawLessonsCache.containsKey(group.trim());
   }
 
-  private int findStartColumnIndex(Elements columns) {
-    for (int i = 0; i < columns.size(); i++) {
-      Pattern pattern = Pattern.compile("^\\d+");
-      if (pattern.matcher(columns.get(i).text()).matches()) return i;
-    }
-    return -1;
+  public List<List<String>> getLessons(int groupNum, Day day) {
+    return getLessons(String.valueOf(groupNum), day);
   }
 
-  private int calculateDayNum(Day day) {
-    return switch (day) {
-      case TODAY -> DateService.getRawDay() - 1;
-      case MONDAY -> 0;
-      case TUESDAY -> 1;
-      case WEDNESDAY -> 2;
-      case THURSDAY -> 3;
-      case FRIDAY -> 4;
-      case SATURDAY -> 5;
+  public List<List<String>> getLessons(String groupNum, Day day) {
+    if (groupNum == null || day == null) return Collections.emptyList();
+    Map<Day, List<List<String>>> days = rawLessonsCache.get(groupNum.trim());
+    if (days == null) return Collections.emptyList();
+    return days.getOrDefault(day, Collections.emptyList());
+  }
+
+  public String getSchedule(int groupNum, Day day) {
+    return getSchedule(String.valueOf(groupNum), day);
+  }
+
+  public String getSchedule(String groupNum, Day day) {
+    if (groupNum == null || groupNum.isBlank()) {
+      return MessagesConfig.GROUP_NOT_DEFINED_EXCEPTION;
+    }
+
+    Map<Day, String> groupDays = scheduleCache.get(groupNum.trim());
+    if (groupDays == null) {
+      return MessagesConfig.GROUP_NOT_FOUND_EXCEPTION;
+    }
+
+    return groupDays.getOrDefault(day, MessagesConfig.NO_LESSONS_MESSAGE);
+  }
+
+  private String[][] buildMatrix(Element table) {
+    Elements trs = table.select("tr");
+    int rowCount = trs.size();
+    int colCount = 100;
+
+    String[][] grid = new String[rowCount][colCount];
+
+    for (int r = 0; r < rowCount; r++) {
+      Element tr = trs.get(r);
+      Elements cells = tr.children();
+      int c = 0;
+
+      for (Element cell : cells) {
+        if (!cell.tagName().equalsIgnoreCase("td") && !cell.tagName().equalsIgnoreCase("th")) {
+          continue;
+        }
+
+        while (c < colCount && grid[r][c] != null) {
+          c++;
+        }
+
+        if (c >= colCount) break;
+
+        int rowspan = cell.hasAttr("rowspan") ? Integer.parseInt(cell.attr("rowspan")) : 1;
+        int colspan = cell.hasAttr("colspan") ? Integer.parseInt(cell.attr("colspan")) : 1;
+        String text = cell.text().replace("\u00A0", " ").trim();
+
+        for (int dr = 0; dr < rowspan && (r + dr) < rowCount; dr++) {
+          for (int dc = 0; dc < colspan && (c + dc) < colCount; dc++) {
+            grid[r + dr][c + dc] = text;
+          }
+        }
+        c += colspan;
+      }
+    }
+    return grid;
+  }
+
+  private void parseMatrix(String[][] grid) {
+    int groupRowIndex = -1;
+    for (int r = 0; r < Math.min(10, grid.length); r++) {
+      int groupMatches = 0;
+      for (int c = 0; c < grid[r].length; c++) {
+        if (grid[r][c] != null && GROUP_PATTERN.matcher(grid[r][c]).find()) {
+          groupMatches++;
+        }
+      }
+      if (groupMatches >= 3) {
+        groupRowIndex = r;
+        break;
+      }
+    }
+
+    if (groupRowIndex == -1) {
+      log.warn("Строка с номерами групп не найдена");
+      return;
+    }
+
+    Map<Integer, String> colToGroup = new HashMap<>();
+    for (int c = 0; c < grid[groupRowIndex].length; c++) {
+      String cell = grid[groupRowIndex][c];
+      if (cell != null && !cell.isBlank()) {
+        Matcher m = GROUP_PATTERN.matcher(cell);
+        if (m.find()) {
+          String groupNum = m.group();
+          if (!colToGroup.containsValue(groupNum)) {
+            colToGroup.put(c, groupNum);
+          }
+        }
+      }
+    }
+
+    Map<String, Map<Day, String>> newScheduleCache = new HashMap<>();
+    Map<String, Map<Day, List<List<String>>>> newRawCache = new HashMap<>();
+
+    Day currentDay = null;
+
+    for (int r = groupRowIndex + 1; r < grid.length; r++) {
+      for (int c = 0; c < 5; c++) {
+        String val = grid[r][c];
+        if (val != null) {
+          Day detected = parseDay(val);
+          if (detected != null) {
+            currentDay = detected;
+            break;
+          }
+        }
+      }
+
+      if (currentDay == null) continue;
+
+      for (Map.Entry<Integer, String> entry : colToGroup.entrySet()) {
+        int gCol = entry.getKey();
+        String groupNum = entry.getValue();
+
+        String pairNum = (gCol < grid[r].length && grid[r][gCol] != null) ? grid[r][gCol] : "";
+        String discipline = (gCol + 1 < grid[r].length && grid[r][gCol + 1] != null) ? grid[r][gCol + 1] : "";
+        String room = (gCol + 2 < grid[r].length && grid[r][gCol + 2] != null) ? grid[r][gCol + 2] : "";
+
+        if (!discipline.isBlank() && !discipline.equalsIgnoreCase("н/п") && !discipline.equalsIgnoreCase("Дисциплина")) {
+          newScheduleCache.computeIfAbsent(groupNum, k -> new HashMap<>());
+          Map<Day, String> dayMap = newScheduleCache.get(groupNum);
+
+          String currentSchedule = dayMap.getOrDefault(currentDay, "");
+          String lessonLine = String.format("%s. %s %s\n",
+              pairNum.isBlank() ? "•" : pairNum,
+              discipline,
+              room.isBlank() ? "" : "(" + room + ")");
+          dayMap.put(currentDay, currentSchedule + lessonLine);
+
+          newRawCache.computeIfAbsent(groupNum, k -> new HashMap<>());
+          Map<Day, List<List<String>>> rawDayMap = newRawCache.get(groupNum);
+          rawDayMap.computeIfAbsent(currentDay, k -> new ArrayList<>());
+          rawDayMap.get(currentDay).add(List.of(pairNum, discipline, room));
+        }
+      }
+    }
+
+    if (!newScheduleCache.isEmpty()) {
+      scheduleCache.clear();
+      scheduleCache.putAll(newScheduleCache);
+
+      rawLessonsCache.clear();
+      rawLessonsCache.putAll(newRawCache);
+    }
+  }
+
+  private Day parseDay(String text) {
+    String t = text.trim().toUpperCase();
+    if (t.contains("ПОНЕДЕЛЬНИК") || t.equals("ПН")) return Day.MONDAY;
+    if (t.contains("ВТОРНИК") || t.equals("ВТ")) return Day.TUESDAY;
+    if (t.contains("СРЕДА") || t.equals("СР")) return Day.WEDNESDAY;
+    if (t.contains("ЧЕТВЕРГ") || t.equals("ЧТ")) return Day.THURSDAY;
+    if (t.contains("ПЯТНИЦА") || t.equals("ПТ")) return Day.FRIDAY;
+    if (t.contains("СУББОТА") || t.equals("СБ")) return Day.SATURDAY;
+    return null;
+  }
+
+  private static SSLSocketFactory createInsecureSslSocketFactory() {
+    TrustManager[] trustAllCerts = new TrustManager[] {
+      new X509TrustManager() {
+        public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
+        public void checkClientTrusted(X509Certificate[] certs, String authType) {}
+        public void checkServerTrusted(X509Certificate[] certs, String authType) {}
+      }
     };
-  }
 
-  private int calculateIncrement(int groupNum) {
-    String groupStr = String.valueOf(groupNum);
-
-    if (Integer.parseInt(String.valueOf(groupStr.charAt(0))) >= 3) return 2;
-
-    return 3;
-  }
-
-  private Document getDocumentByUrl(String url) throws IOException {
     try {
       SSLContext sslContext = SSLContext.getInstance("TLS");
-      sslContext.init(null, TRUST_ALL_CERTS, new java.security.SecureRandom());
-      SSLSocketFactory sslSocketFactory = sslContext.getSocketFactory();
-
-      return Jsoup.connect(url).sslSocketFactory(sslSocketFactory).timeout(10000).get();
-    } catch (NoSuchAlgorithmException | KeyManagementException e) {
-      throw new IOException("SSL error", e);
+      sslContext.init(null, trustAllCerts, new SecureRandom());
+      return sslContext.getSocketFactory();
+    } catch (Exception e) {
+      throw new IllegalStateException("Ошибка инициализации SSL", e);
     }
   }
 }

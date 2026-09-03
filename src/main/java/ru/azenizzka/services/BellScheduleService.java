@@ -1,7 +1,11 @@
 package ru.azenizzka.services;
 
+import java.util.Map;
+import org.springframework.stereotype.Service;
 import ru.azenizzka.utils.BellType;
+import ru.azenizzka.utils.Day;
 
+@Service
 public class BellScheduleService {
   private static byte[][][] bellRecess;
 
@@ -37,6 +41,43 @@ public class BellScheduleService {
   private static final String partsSeparator = "    ";
   private static final String endOfLine = "\n";
 
+  private static final Map<Integer, String> MONDAY_BELLS = Map.of(
+      1, "09:20–10:05 | 10:10–10:55",
+      2, "11:15–12:00 | 12:05–12:50",
+      3, "13:20–14:05 | 14:10–14:55",
+      4, "15:15–16:00 | 16:05–16:50",
+      5, "17:00–17:45 | 17:50–18:35",
+      6, "18:45–19:30 | 19:35–20:20"
+  );
+
+  private static final Map<Integer, String> SATURDAY_BELLS = Map.of(
+      1, "08:30–09:15 | 09:20–10:05",
+      2, "10:20–11:05 | 11:10–11:55",
+      3, "12:05–12:50 | 12:55–13:40",
+      4, "13:50–14:35 | 14:40–15:25",
+      5, "15:35–16:20 | 16:25–17:10",
+      6, "17:20–18:05 | 18:10–18:55"
+  );
+
+  private static final Map<Integer, String> DEFAULT_BELLS = Map.of(
+      1, "08:30–09:15 | 09:20–10:05",
+      2, "10:20–11:05 | 11:10–11:55",
+      3, "12:25–13:10 | 13:15–14:00",
+      4, "14:30–15:15 | 15:20–16:05",
+      5, "16:15–17:00 | 17:05–17:50",
+      6, "18:00–18:45 | 18:50–19:35"
+  );
+
+  public String getBellTime(Day day, int lessonNum) {
+    Map<Integer, String> targetMap = switch (day) {
+      case MONDAY -> MONDAY_BELLS;
+      case SATURDAY -> SATURDAY_BELLS;
+      default -> DEFAULT_BELLS;
+    };
+
+    return targetMap.getOrDefault(lessonNum, "");
+  }
+
   public static String getStringWithSchedule(BellType bellType) {
     StringBuilder out = new StringBuilder();
 
@@ -63,7 +104,8 @@ public class BellScheduleService {
 
         if (from.length() == 1) {
           from = "0" + from;
-        } else if (to.length() == 1) {
+        }
+        if (to.length() == 1) {
           to = "0" + to;
         }
 
@@ -73,6 +115,8 @@ public class BellScheduleService {
           out.append(space);
         } else if (time == 1) {
           out.append(partsSeparator);
+        } else {
+          out.append(endOfLine);
         }
       }
       out.append(endOfLine);

@@ -8,14 +8,11 @@ COPY settings.gradle.kts .
 COPY build.gradle.kts .
 COPY src/ src/
 
-RUN ./gradlew bootJar --no-daemon
+RUN gradle bootJar --no-daemon
 
 FROM eclipse-temurin:21-jre-alpine
 
 WORKDIR /app
-
-RUN apk add --no-cache \
-    bash
 
 COPY --from=builder /app/build/libs/*.jar app.jar
 

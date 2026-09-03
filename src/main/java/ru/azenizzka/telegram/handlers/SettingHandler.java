@@ -32,7 +32,7 @@ public class SettingHandler implements Handler {
         continue;
       }
 
-      if (command.getCommand().equals(textMessage)) {
+      if (command.getCommand().equalsIgnoreCase(textMessage)) {
         return command.handle(update, person);
       }
     }
