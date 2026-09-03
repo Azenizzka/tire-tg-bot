@@ -24,4 +24,5 @@ public class Person {
   private InputType inputType;
 
   private boolean isBanned = false;
+  private boolean isReportMuted = false;
 }

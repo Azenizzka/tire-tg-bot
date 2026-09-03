@@ -11,15 +11,19 @@ public class MainKeyboard {
   public static void addKeyboard(SendMessage message) {
     ReplyKeyboardMarkup keyboardMarkup = new ReplyKeyboardMarkup();
     List<KeyboardRow> keyboard = new ArrayList<>();
+    
     KeyboardRow row = new KeyboardRow();
 
-    row.add(MessagesConfig.RECESS_SCHEDULE_COMMAND);
+    // Если "Звонки" тебе тут больше не нужны, можешь удалить строку ниже:
+    row.add(MessagesConfig.RECESS_SCHEDULE_COMMAND); 
     row.add(MessagesConfig.LESSON_SCHEDULE_COMMAND);
 
     keyboard.add(row);
     row = new KeyboardRow();
 
     row.add(MessagesConfig.SETTINGS_COMMAND);
+    row.add("ℹ️ О боте"); // <-- Наша новая кнопка
+    
     keyboard.add(row);
 
     keyboardMarkup.setResizeKeyboard(true);

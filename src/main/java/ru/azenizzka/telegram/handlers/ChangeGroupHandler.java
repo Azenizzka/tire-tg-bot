@@ -51,3 +51,4 @@ public class ChangeGroupHandler implements Handler {
       return List.of(new ErrorMessage(person.getChatId(), MessagesConfig.GROUP_NOT_FOUND_EXCEPTION));
     }
   }
+}
