@@ -51,27 +51,54 @@ public class LessonScheduleService {
 
   public synchronized void updateCache() {
     log.info("Запуск обновления кэша расписания...");
-    try {
-      Document doc = Jsoup.connect(scheduleUrl)
-          .sslSocketFactory(SSL_SOCKET_FACTORY)
-          .userAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-          .timeout(15_000)
-          .get();
+    
+    // Создаем временные кэши, чтобы собрать данные со всех 8 страниц
+    Map<String, Map<Day, String>> newScheduleCache = new HashMap<>();
+    Map<String, Map<Day, List<List<String>>>> newRawCache = new HashMap<>();
+    
+    // Базовый URL до папки с расписанием (можно вынести в properties)
+    String baseUrl = "https://ntmm.ru/incoming/R-OO/";
 
-      Element table = doc.selectFirst("table");
-      if (table == null) {
-        log.warn("Таблица расписания не найдена по адресу {}", scheduleUrl);
-        return;
-      }
+    for (int i = 1; i <= 8; i++) {
+        String url = baseUrl + i + "_screen.files/sheet001.htm";
+        try {
+            Document doc = Jsoup.connect(url)
+                .sslSocketFactory(SSL_SOCKET_FACTORY)
+                .userAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+                .timeout(15_000)
+                .get();
 
-      String[][] grid = buildMatrix(table);
-      parseMatrix(grid);
+            Element table = doc.selectFirst("table");
+            if (table == null) {
+                log.warn("Таблица расписания не найдена по адресу {}", url);
+                continue;
+            }
 
-      log.info("Кэш успешно обновлен. Загружено групп: {}", scheduleCache.size());
-    } catch (Exception e) {
-      log.error("Ошибка при обновлении кэша расписания: {}", e.getMessage());
+            String[][] grid = buildMatrix(table);
+            
+            // Передаем временные кэши в парсер, чтобы он их наполнял
+            parseMatrix(grid, newScheduleCache, newRawCache);
+            log.info("Успешно спарсили страницу {}", i);
+            
+        } catch (Exception e) {
+            log.error("Ошибка при обновлении кэша с {}: {}", url, e.getMessage());
+        }
+    }
+
+    // После цикла проверяем, скачали ли мы хоть что-то
+    if (!newScheduleCache.isEmpty()) {
+        scheduleCache.clear();
+        scheduleCache.putAll(newScheduleCache);
+
+        rawLessonsCache.clear();
+        rawLessonsCache.putAll(newRawCache);
+        
+        log.info("Кэш успешно обновлен. Загружено групп: {}", scheduleCache.size());
+    } else {
+        log.warn("Не удалось загрузить расписание ни с одной страницы!");
     }
   }
+
 
   public boolean isGroupExists(int group) {
     return isGroupExists(String.valueOf(group));
@@ -148,7 +175,8 @@ public class LessonScheduleService {
     return grid;
   }
 
-  private void parseMatrix(String[][] grid) {
+  private void parseMatrix(String[][] grid, Map<String, Map<Day, String>> newScheduleCache, 
+                         Map<String, Map<Day, List<List<String>>>> newRawCache) {
     int groupRowIndex = -1;
     for (int r = 0; r < Math.min(10, grid.length); r++) {
       int groupMatches = 0;
@@ -182,8 +210,6 @@ public class LessonScheduleService {
       }
     }
 
-    Map<String, Map<Day, String>> newScheduleCache = new HashMap<>();
-    Map<String, Map<Day, List<List<String>>>> newRawCache = new HashMap<>();
 
     Day currentDay = null;
 
@@ -227,16 +253,7 @@ public class LessonScheduleService {
         }
       }
     }
-
-    if (!newScheduleCache.isEmpty()) {
-      scheduleCache.clear();
-      scheduleCache.putAll(newScheduleCache);
-
-      rawLessonsCache.clear();
-      rawLessonsCache.putAll(newRawCache);
-    }
   }
-
   private Day parseDay(String text) {
     String t = text.trim().toUpperCase();
     if (t.contains("ПОНЕДЕЛЬНИК") || t.equals("ПН")) return Day.MONDAY;
