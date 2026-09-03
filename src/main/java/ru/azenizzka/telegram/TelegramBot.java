@@ -42,14 +42,20 @@ public class TelegramBot extends TelegramLongPollingBot {
     return configuration.getName();
   }
 
-  @Override
+@Override
   public void onUpdateReceived(Update update) {
-    if (!update.hasMessage() || !update.getMessage().hasText()) {
+    String chatId;
+    String username;
+
+    if (update.hasCallbackQuery()) {
+      chatId = String.valueOf(update.getCallbackQuery().getFrom().getId());
+      username = update.getCallbackQuery().getFrom().getUserName();
+    } else if (update.hasMessage() && update.getMessage().hasText()) {
+      chatId = update.getMessage().getChatId().toString();
+      username = update.getMessage().getChat().getUserName();
+    } else {
       return;
     }
-
-    String chatId = update.getMessage().getChatId().toString();
-    String username = update.getMessage().getChat().getUserName();
 
     try {
       // 1. Ищем пользователя или создаем нового
@@ -79,10 +85,9 @@ public class TelegramBot extends TelegramLongPollingBot {
       // 5. Отправка сообщений
       sendMessage(responses);
     } catch (Exception e) {
-      log.error("Ошибка при обработке сообщения от chatId {}: {}", chatId, e.getMessage(), e);
+      log.error("Ошибка при обработке события от chatId {}: {}", chatId, e.getMessage(), e);
     }
   }
-
   public void sendMessage(List<SendMessage> messages) {
     if (messages == null || messages.isEmpty()) {
       return;

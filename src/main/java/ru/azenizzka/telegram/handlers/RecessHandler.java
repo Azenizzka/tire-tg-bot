@@ -9,6 +9,7 @@ import ru.azenizzka.services.BellScheduleService;
 import ru.azenizzka.services.LessonScheduleService;
 import ru.azenizzka.telegram.TelegramBot;
 import ru.azenizzka.telegram.keyboards.KeyboardType;
+import ru.azenizzka.telegram.keyboards.ReportKeyboard;
 import ru.azenizzka.telegram.messages.CustomMessage;
 import ru.azenizzka.telegram.messages.ErrorMessage;
 import ru.azenizzka.utils.Day;
@@ -32,12 +33,12 @@ public class RecessHandler implements Handler {
   public List<SendMessage> handle(Update update, Person person) {
     person.setInputType(InputType.COMMAND);
 
-    CustomMessage message = new CustomMessage(person.getChatId(), KeyboardType.MAIN);
     String textMessage = update.getMessage().getText().toLowerCase();
 
     try {
       Day day = DayUtil.convertStrToDay(textMessage);
 
+      // 1. Возвращаем нижнее меню MAIN через промежуточное сообщение ожидания
       CustomMessage pleaseWaitMessage =
           new CustomMessage(
               person.getChatId(),
@@ -73,11 +74,14 @@ public class RecessHandler implements Handler {
         result.append("\n");
       }
 
-      message.setText(result.toString().trim());
+      // 2. Формируем сообщение с расписанием и крепим ТОЛЬКО Inline-кнопку
+      SendMessage scheduleMessage = new SendMessage(person.getChatId(), result.toString().trim());
+      scheduleMessage.enableMarkdown(true);
+      scheduleMessage.setReplyMarkup(ReportKeyboard.getKeyboard(textMessage));
+
+      return List.of(scheduleMessage);
     } catch (Exception e) {
       return List.of(new ErrorMessage(person.getChatId(), e.getMessage()));
     }
-
-    return List.of(message);
   }
 }

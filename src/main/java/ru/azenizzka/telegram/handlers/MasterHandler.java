@@ -21,6 +21,7 @@ public class MasterHandler implements Handler {
   private final SettingHandler settingHandler;
   private final RecessHandler recessHandler;
   private final AuditLogHandler auditLogHandler;
+  private final CallbackQueryHandler callbackQueryHandler;
 
   private final TelegramBotConfiguration configuration;
 
@@ -31,7 +32,8 @@ public class MasterHandler implements Handler {
       ChangeGroupHandler changeGroupHandler,
       SettingHandler settingHandler,
       RecessHandler recessHandler,
-      AuditLogHandler auditLogHandler) {
+      AuditLogHandler auditLogHandler,
+      CallbackQueryHandler callbackQueryHandler) {
     this.configuration = configuration;
 
     this.commandsHandler = commandsHandler;
@@ -40,10 +42,14 @@ public class MasterHandler implements Handler {
     this.settingHandler = settingHandler;
     this.recessHandler = recessHandler;
     this.auditLogHandler = auditLogHandler;
+    this.callbackQueryHandler = callbackQueryHandler;
   }
-
   @Override
   public List<SendMessage> handle(Update update, Person person) {
+    if (update.hasCallbackQuery()) {
+      callbackQueryHandler.handle(update.getCallbackQuery());
+      return List.of();
+    }
     // 1. Если пишут админы из аудит-чата (баны, ответы пользователям) - сразу отдаем управление логеру
     if (person.getChatId().equals(configuration.getAuditLogChatId())) {
       return auditLogHandler.handle(update, person);
