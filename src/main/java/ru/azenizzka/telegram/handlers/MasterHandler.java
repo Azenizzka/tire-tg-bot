@@ -44,29 +44,46 @@ public class MasterHandler implements Handler {
 
   @Override
   public List<SendMessage> handle(Update update, Person person) {
-    List<SendMessage> messages = new ArrayList<>(auditLogHandler.handle(update, person));
+    // 1. Если пишут админы из аудит-чата (баны, ответы пользователям) - сразу отдаем управление логеру
+    if (person.getChatId().equals(configuration.getAuditLogChatId())) {
+      return auditLogHandler.handle(update, person);
+    }
 
-    if (update.getMessage().getText().equals(MessagesConfig.RETURN_COMMAND)) {
+    List<SendMessage> messages = new ArrayList<>();
+
+    if (update.getMessage().getText() != null && update.getMessage().getText().equals(MessagesConfig.RETURN_COMMAND)) {
       person.setInputType(InputType.COMMAND);
     }
 
-    if (person.getChatId().equals(configuration.getAuditLogChatId())) {
-      return messages;
-    }
-
     if (person.isBanned()) {
-      SendMessage message = new ErrorMessage(person.getChatId(), "Ошибка доступа к боту..");
-      messages.add(message);
-
+      messages.add(new ErrorMessage(person.getChatId(), "Ошибка доступа к боту.."));
       return messages;
     }
 
-    switch (person.getInputType()) {
-      case COMMAND -> messages.addAll(commandsHandler.handle(update, person));
-      case BELL_TYPE -> messages.addAll(bellTypeHandler.handle(update, person));
-      case GROUP -> messages.addAll(changeGroupHandler.handle(update, person));
-      case SETTINGS_MAIN -> messages.addAll(settingHandler.handle(update, person));
-      case DAY -> messages.addAll(recessHandler.handle(update, person));
+    // 2. Обрабатываем запрос обычного юзера
+    try {
+      switch (person.getInputType()) {
+        case COMMAND -> messages.addAll(commandsHandler.handle(update, person));
+        case BELL_TYPE -> messages.addAll(bellTypeHandler.handle(update, person));
+        case GROUP -> messages.addAll(changeGroupHandler.handle(update, person));
+        case SETTINGS_MAIN -> messages.addAll(settingHandler.handle(update, person));
+        case DAY -> messages.addAll(recessHandler.handle(update, person));
+      }
+
+      // 3. Проверяем, есть ли среди ответов бота ошибка (сообщение типа ErrorMessage)
+      boolean hasError = messages.stream().anyMatch(m -> m instanceof ErrorMessage);
+
+      // Логируем в аудит-чат ТОЛЬКО если бот ответил юзеру ошибкой
+      if (hasError) {
+        messages.addAll(auditLogHandler.handle(update, person));
+      }
+
+    } catch (Exception e) {
+      log.error("Unhandled exception for user {}: ", person.getChatId(), e);
+      messages.add(new ErrorMessage(person.getChatId(), "Произошла системная ошибка."));
+      
+      // В случае краша (например, NullPointerException) тоже кидаем исходный запрос в аудит, чтобы ты видел, на чем бот упал
+      messages.addAll(auditLogHandler.handle(update, person));
     }
 
     return messages;
