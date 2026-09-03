@@ -176,7 +176,7 @@ public class LessonScheduleService {
   }
 
   private void parseMatrix(String[][] grid, Map<String, Map<Day, String>> newScheduleCache, 
-                         Map<String, Map<Day, List<List<String>>>> newRawCache) {
+                           Map<String, Map<Day, List<List<String>>>> newRawCache) {
     int groupRowIndex = -1;
     for (int r = 0; r < Math.min(10, grid.length); r++) {
       int groupMatches = 0;
@@ -210,21 +210,61 @@ public class LessonScheduleService {
       }
     }
 
-
-    Day currentDay = null;
+    // 1. Разбиваем строки на блоки дней по началу 1-й пары в служебных колонках
+    List<List<Integer>> dayBlocks = new ArrayList<>();
+    List<Integer> currentBlock = null;
 
     for (int r = groupRowIndex + 1; r < grid.length; r++) {
-      for (int c = 0; c < 5; c++) {
+      boolean isDayStart = false;
+      for (int c = 0; c < Math.min(4, grid[r].length); c++) {
         String val = grid[r][c];
-        if (val != null) {
-          Day detected = parseDay(val);
-          if (detected != null) {
-            currentDay = detected;
-            break;
-          }
+        if (val != null && val.trim().equals("1")) {
+          isDayStart = true;
+          break;
         }
       }
 
+      if (isDayStart) {
+        currentBlock = new ArrayList<>();
+        dayBlocks.add(currentBlock);
+      }
+
+      if (currentBlock != null) {
+        currentBlock.add(r);
+      }
+    }
+
+    // 2. Определяем день недели для каждой строки
+    Day[] defaultDays = {Day.MONDAY, Day.TUESDAY, Day.WEDNESDAY, Day.THURSDAY, Day.FRIDAY, Day.SATURDAY};
+    Map<Integer, Day> rowToDay = new HashMap<>();
+
+    for (int i = 0; i < dayBlocks.size(); i++) {
+      List<Integer> block = dayBlocks.get(i);
+      Day blockDay = (i < defaultDays.length) ? defaultDays[i] : null;
+
+      for (int row : block) {
+        for (int c = 0; c < Math.min(5, grid[row].length); c++) {
+          Day parsed = parseDay(grid[row][c]);
+          if (parsed != null) {
+            blockDay = parsed;
+            break;
+          }
+        }
+        if (blockDay != null && i < defaultDays.length && blockDay == defaultDays[i]) {
+          break;
+        }
+      }
+
+      if (blockDay != null) {
+        for (int row : block) {
+          rowToDay.put(row, blockDay);
+        }
+      }
+    }
+
+    // 3. Парсим предметы групп с точной привязкой дня
+    for (int r = groupRowIndex + 1; r < grid.length; r++) {
+      Day currentDay = rowToDay.get(r);
       if (currentDay == null) continue;
 
       for (Map.Entry<Integer, String> entry : colToGroup.entrySet()) {
@@ -254,8 +294,10 @@ public class LessonScheduleService {
       }
     }
   }
+
   private Day parseDay(String text) {
-    String t = text.trim().toUpperCase();
+    if (text == null) return null;
+    String t = text.replace(" ", " ").trim().toUpperCase();
     if (t.contains("ПОНЕДЕЛЬНИК") || t.equals("ПН")) return Day.MONDAY;
     if (t.contains("ВТОРНИК") || t.equals("ВТ")) return Day.TUESDAY;
     if (t.contains("СРЕДА") || t.equals("СР")) return Day.WEDNESDAY;
